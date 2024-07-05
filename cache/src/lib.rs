@@ -1,14 +1,7 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+use std::sync::Arc;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+trait ConcurrentCache<K, V> {
+    fn insert(&self, key: K, value: V);
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+    fn get(&self, key: &K) -> Arc<&V>;
 }
