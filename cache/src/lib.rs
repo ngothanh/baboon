@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockWriteGuard};
+
+use count_min_sketch::CountMinSketch8;
 
 trait ConcurrentCache<K, V> {
     fn insert(&self, key: K, value: V);
@@ -12,7 +14,42 @@ pub struct LFUCache<K, V>
 where
     K: Eq + Hash,
 {
-    main_storage: RwLock<HashMap<K, Arc<V>>>,
+    inner: RwLock<Inner<K, V>>,
+}
+
+pub struct Inner<K, V>
+where
+    K: Eq + Hash,
+{
+    main_storage: HashMap<K, Arc<V>>,
+    frequency_sketch: CountMinSketch8<K>,
+}
+
+impl<K, V> Inner<K, V>
+where
+    K: Eq + Hash,
+{
+    pub fn new(capacity: usize) -> Self {
+        let cache = HashMap::with_capacity(capacity);
+        let sketch =
+            CountMinSketch8::new(capacity, 0.95, 10.0)
+                .expect("Failed to create frequency sketch");
+
+        Self {
+            main_storage: cache,
+            frequency_sketch: sketch,
+        }
+    }
+    fn insert(&mut self, key: K, value: V) {
+        self.frequency_sketch.estimate(&key);
+        self.main_storage.insert(key, Arc::new(value));
+    }
+
+    fn get(&mut self, key: &K) -> Option<Arc<V>> {
+        self.frequency_sketch.increment(key);
+        self.main_storage.get(key)
+            .map(|v| Arc::clone(v))
+    }
 }
 
 impl<K, V> LFUCache<K, V>
@@ -21,8 +58,13 @@ where
 {
     pub fn new(capacity: usize) -> Self {
         Self {
-            main_storage: RwLock::new(HashMap::with_capacity(capacity))
+            inner: RwLock::new(Inner::new(capacity))
         }
+    }
+
+    pub fn inner_mut(&self) -> RwLockWriteGuard<'_, Inner<K, V>> {
+        self.inner.write()
+            .expect("Unable to acquire write lock")
     }
 }
 
@@ -31,25 +73,18 @@ where
     K: Eq + Hash,
 {
     fn insert(&self, key: K, value: V) {
-        let mut m = self.main_storage
-            .write()
-            .expect("Cannot acquire write lock on the map");
-        m.insert(key, Arc::new(value));
+        self.inner_mut().insert(key, value);
     }
 
     fn get(&self, key: &K) -> Option<Arc<V>> {
-        let m = self.main_storage
-            .read()
-            .expect("Cannot acquire read lock on the map");
-
-        m.get(key)
-            .map(|v| Arc::clone(v))
+        self.inner_mut().get(key)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
     use crate::{ConcurrentCache, LFUCache};
 
     #[test]
